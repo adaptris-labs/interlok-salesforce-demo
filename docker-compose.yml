@@ -1,0 +1,46 @@
+#
+# Not that http://localhost:8080/swagger may give you an error, because it's hard-coded to query localhost:8080/contacts/swagger
+# Basically using docker-toolbox + windows7 means you're going for a non-localhost URL.
+# You'll need to wait awhile as well for mysql to come up
+# Check the DB has been created using the mysql console
+# docker exec -it sfdc_mysql mysql -uroot -ppassword
+version: '3'
+services:
+  mysql:
+    image: mysql/mysql-server:5.6
+    container_name: sfdc_mysql
+    hostname: sfdc_mysql.local
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+      MYSQL_DATABASE: sfdc_demo
+      MYSQL_USER: sfdc
+      MYSQL_PASSWORD: sfdc
+    ports:
+      - '3306:3306'
+    # Mount and execute our SQL files.
+    volumes:
+      - ./sql:/docker-entrypoint-initdb.d
+
+  interlok:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sfdc_demo
+    hostname: sfdc_demo.local
+    ## If you're going to mount; then ./config has to contain everything, e.g. log4j2.xml / jetty.xml / webdefault.xml
+    ## volumes:
+    ##   - ./config:/opt/interlok/config
+    environment:
+      JVM_ARGS: -Xmx1G
+      # Windows 7/docker-toolbox; you probably want to change from localhost:8080 to 192.168.99.100:8080 or similar.
+      # So that the swagger file returned back to you is "testable" in the local swagger deployment.
+      # Make sure you have the appropriate environment variables set in .env (example in .env.template)
+      JAVA_OPTS: -Dinterlok.db.url=jdbc:mysql://mysql:3306/sfdc_demo -Dinterlok.db.user=sfdc -Dinterlok.db.password=sfdc -Dinterlok.api.host=localhost:8080 -Dinterlok.sf.user=${SF_USER} -Dinterlok.sf.password=${SF_PW} -Dinterlok.sf.consumerKey=${SF_CONSUMER_KEY} -Dinterlok.sf.consumerSecret=${SF_CONSUMER_SECRET} -Dinterlok.sf.contactsURL=${SF_CONTACTS_URL}
+    ports:
+      - '8080:8080'
+    depends_on:
+      - mysql
+    links:
+      - mysql:mysql
+
+

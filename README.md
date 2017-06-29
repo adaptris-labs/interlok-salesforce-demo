@@ -1,6 +1,10 @@
 # interlok-salesforce-demo
 
-What this is, is a crappy little MySQL backed Contact Manager DB exposed via Interlok as a REST style API (swagger included). Any changes pushed into the database are reflected in your Salesforce instance.
+What this does:
+
+* It's a little MySQL backed Contact Manager DB exposed via Interlok as a REST style API (swagger included). Any changes pushed into the database are reflected in your Salesforce instance.
+* DELETE's aren't synchronised, just new contacts and updated contacts
+* Little or no error handling.
 
 If this doesn't work; well feel free to hack about with it until it does. I'm no docker or ant expert...
 
