@@ -12,6 +12,8 @@ If this doesn't work; well feel free to hack about with it until it does. I'm no
 * If you can't get ANT to work, then hack about with the build.xml until it does.
 * If you can't make the adapter work; well that's when you can raise an issue.
 
+__lewinc/interlok-salesforce-demo:latest is builds everytime adaptris/interlok:snapshot-alpine is generated; so bleeding edge only__
+
 ## Salesforce Pre-requisites
 
 Here's the information that you need to know. Presumably you have a developer.force.com account, and an instance setup.
