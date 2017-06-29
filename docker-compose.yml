@@ -22,14 +22,17 @@ services:
       - ./sql:/docker-entrypoint-initdb.d
 
   interlok:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    # Build or not build.. you decide
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
+    image: lewinc/salesforce-demo:latest
+
     container_name: sfdc_demo
     hostname: sfdc_demo.local
-    ## If you're going to mount; then ./config has to contain everything, e.g. log4j2.xml / jetty.xml / webdefault.xml
-    ## volumes:
-    ##   - ./config:/opt/interlok/config
+    # If you're going to mount; then ./config has to contain everything, e.g. log4j2.xml / jetty.xml / webdefault.xml
+    # volumes:
+    #   - ./config:/opt/interlok/config
     environment:
       JVM_ARGS: -Xmx1G
       # Windows 7/docker-toolbox; you probably want to change from localhost:8080 to 192.168.99.100:8080 or similar.
