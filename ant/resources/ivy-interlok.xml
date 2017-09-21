@@ -29,6 +29,7 @@
     <dependency org="com.adaptris" name="adp-json" rev="${adp-core-version}" conf="runtime->default;javadoc->javadoc" changing="true"/>
     <dependency org="com.adaptris" name="adp-simple-csv" rev="${adp-core-version}" conf="runtime->default;javadoc->javadoc" changing="true"/>
     <dependency org="com.adaptris" name="adp-apache-http" rev="${adp-core-version}" conf="runtime->default;javadoc->javadoc" changing="true"/>
+    <dependency org="com.adaptris" name="interlok-oauth-salesforce" rev="${adp-core-version}" conf="runtime->default;javadoc->javadoc" changing="true"/>
 
     <dependency org="mysql" name="mysql-connector-java" rev="5.1.42" conf="runtime->default"/>
 
