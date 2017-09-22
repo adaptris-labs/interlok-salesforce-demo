@@ -10,6 +10,14 @@
           <broker-url>tcp://localhost:61616</broker-url>
         </vendor-implementation>
       </jms-connection>
+      <cache-connection>
+        <unique-id>ADAPTER_DEFAULT_CACHE</unique-id>
+        <cache-instance class="default-ehcache">
+          <cache-name>ADAPTER_DEFAULT_CACHE</cache-name>
+          <eviction-policy>LRU</eviction-policy>
+          <max-elements-in-memory>0</max-elements-in-memory>
+        </cache-instance>
+      </cache-connection>
       <jdbc-pooled-connection>
         <unique-id>LocalMySQL</unique-id>
         <test-statement>SELECT DATABASE(), VERSION(), NOW(), USER();</test-statement>
@@ -22,6 +30,128 @@
         <unique-id>jetty-connection</unique-id>
       </jetty-embedded-connection>
     </connections>
+    <services>
+      <service class="service-list">
+        <unique-id>OAUTH</unique-id>
+        <services>
+          <clone-message-service-list>
+            <override-metadata>true</override-metadata>
+            <override-metadata-filter class="regex-metadata-filter">
+              <include-pattern>^Authorization.*</include-pattern>
+            </override-metadata-filter>
+            <services>
+              <standalone-requestor>
+                <connection class="shared-connection">
+                  <lookup-name>LocalActiveMQ</lookup-name>
+                </connection>
+                <producer class="jms-topic-producer">
+                  <destination class="configured-produce-destination">
+                    <destination>sfdc.authenticate</destination>
+                  </destination>
+                  <ignore-reply-metadata>false</ignore-reply-metadata>
+                  <message-translator class="text-message-translator">
+                    <metadata-filter class="regex-metadata-filter">
+                      <include-pattern>^Authorization.*</include-pattern>
+                    </metadata-filter>
+                  </message-translator>
+                </producer>
+                <reply-timeout>
+                  <unit>SECONDS</unit>
+                  <interval>30</interval>
+                </reply-timeout>
+              </standalone-requestor>
+            </services>
+          </clone-message-service-list>
+        </services>
+      </service>
+      <service class="service-list">
+        <unique-id>XML_TO_SF_JSON</unique-id>
+        <services>
+          <xml-transform-service>
+            <url>${mappings_url}</url>
+            <transform-parameter class="xml-transform-string-parameter">
+              <metadata-filter>
+                <include-pattern>.*</include-pattern>
+              </metadata-filter>
+            </transform-parameter>
+            <output-message-encoding>UTF-8</output-message-encoding>
+            <xml-transformer-factory class="xslt-transformer-factory"/>
+          </xml-transform-service>
+          <json-xml-transform-service>
+            <direction>XML_TO_JSON</direction>
+            <driver class="default-transformation-driver"/>
+          </json-xml-transform-service>
+        </services>
+      </service>
+      <service class="service-list">
+        <unique-id>EXPIRE_OAUTH</unique-id>
+        <services>
+          <standalone-requestor>
+            <connection class="shared-connection">
+              <lookup-name>LocalActiveMQ</lookup-name>
+            </connection>
+            <producer class="jms-topic-producer">
+              <destination class="configured-produce-destination">
+                <destination>sfdc.authenticate.delete</destination>
+              </destination>
+              <message-translator class="text-message-translator"/>
+            </producer>
+            <reply-timeout>
+              <unit>SECONDS</unit>
+              <interval>30</interval>
+            </reply-timeout>
+          </standalone-requestor>
+        </services>
+      </service>
+      <service class="service-list">
+        <unique-id>RESTORE_XML</unique-id>
+        <services>
+          <payload-from-metadata-service>
+            <metadata-tokens>
+              <key-value-pair>
+                <key>tmp_original_xml</key>
+                <value>__PAYLOAD__</value>
+              </key-value-pair>
+            </metadata-tokens>
+            <template>__PAYLOAD__</template>
+          </payload-from-metadata-service>
+          <metadata-filter-service>
+            <filter class="regex-metadata-filter">
+              <include-pattern>^tmp_original_xml$</include-pattern>
+            </filter>
+          </metadata-filter-service>
+        </services>
+      </service>
+      <service class="service-list">
+        <unique-id>CAPTURE_XML</unique-id>
+        <services>
+          <regexp-metadata-service>
+            <regexp-metadata-query>
+              <metadata-key>tmp_original_xml</metadata-key>
+              <query-expression>(?s)(.*)</query-expression>
+            </regexp-metadata-query>
+          </regexp-metadata-service>
+        </services>
+      </service>
+      <service class="service-list">
+        <unique-id>RETRY_SF_MESSAGE</unique-id>
+        <services>
+          <standalone-producer>
+            <connection class="shared-connection">
+              <lookup-name>LocalActiveMQ</lookup-name>
+            </connection>
+            <producer class="jms-topic-producer">
+              <destination class="configured-produce-destination">
+                <destination>%message{retry_topic}</destination>
+              </destination>
+              <message-translator class="text-message-translator">
+                <metadata-filter class="remove-all-metadata-filter"/>
+              </message-translator>
+            </producer>
+          </standalone-producer>
+        </services>
+      </service>
+    </services>
   </shared-components>
   <channel-list>
     <channel>
@@ -29,36 +159,17 @@
       <message-error-handler class="standard-processing-exception-handler">
         <processing-exception-service class="service-list">
           <services>
-            <embedded-scripting-service>
-              <language>javascript</language>
-              <continue-on-fail>true</continue-on-fail>
-              <script>
-                <![CDATA[
-                    var objectHeaders = message.getObjectHeaders();
-
-                    var exceptionReport = new java.util.HashMap();
-                    exceptionReport.put("workflow", message.getMetadataValue("workflowId"));
-                    var exception = objectHeaders["java.lang.Exception"];
-                    if(exception != null) {
-                      var flatException = new java.lang.Exception(exception.getMessage());
-                      flatException.setStackTrace(exception.getStackTrace());
-                      exceptionReport.put("exception", flatException);
-                      exceptionReport.put("exceptionMessage", exception.getMessage());
-                    }
-                    var exceptionLocation = objectHeaders["java.lang.Exception_Cause"];
-                    if(exceptionLocation != null) {
-                      exceptionReport.put("exceptionLocation", exceptionLocation);
-                    }
-                    message.setContent(new com.fasterxml.jackson.databind.ObjectMapper().writer(new com.fasterxml.jackson.core.util.DefaultPrettyPrinter()).writeValueAsString(exceptionReport), "UTF-8");
-
-                  ]]>
-              </script>
-            </embedded-scripting-service>
+            <exception-report-service>
+              <exception-serializer class="exception-as-json-with-stacktrace"/>
+            </exception-report-service>
             <standalone-producer>
               <producer class="jetty-standard-response-producer">
                 <status-provider class="http-configured-status">
                   <status>INTERNAL_ERROR_500</status>
                 </status-provider>
+                <content-type-provider class="http-configured-content-type-provider">
+                  <mime-type>application/json</mime-type>
+                </content-type-provider>
                 <send-payload>true</send-payload>
               </producer>
             </standalone-producer>
@@ -68,7 +179,6 @@
       <consume-connection class="shared-connection">
         <lookup-name>jetty-connection</lookup-name>
       </consume-connection>
-      <produce-connection class="null-connection"/>
       <workflow-list>
         <standard-workflow>
           <consumer class="jetty-message-consumer">
@@ -76,84 +186,52 @@
             <destination class="configured-consume-destination">
               <destination>/contacts/*</destination>
             </destination>
-            <warn-after-message-hang-millis>20000</warn-after-message-hang-millis>
             <parameter-handler class="jetty-http-parameters-as-metadata"/>
             <header-handler class="jetty-http-ignore-headers"/>
           </consumer>
           <service-collection class="service-list">
             <services>
-              <log-message-service>
-                <include-payload>true</include-payload>
-                <log-level>DEBUG</log-level>
-              </log-message-service>
               <branching-service-collection>
                 <unique-id>HTTP Router</unique-id>
                 <first-service-id>route</first-service-id>
                 <services>
-                  <embedded-scripting-service>
+                  <jetty-routing-service>
                     <unique-id>route</unique-id>
-                    <language>javascript</language>
-                    <branching-enabled>true</branching-enabled>
-                    <script><![CDATA[
-                    var routes = [
-                      { method:  "GET",
-                        pattern: "^/contacts/swagger$",
-                        vars:    [],
-                        service: "swagger" },
-                      { method:  "GET",
-                        pattern: "^/contacts/(.*)$",
-                        vars:    ["LocalContactId"],
-                        service: "retrieve" },
-                      { method:  "DELETE",
-                        pattern: "^/contacts/(.*)$",
-                        vars:    ["LocalContactId"],
-                        service: "delete" },
-                      { method:  "GET",
-                        pattern: "^/contacts$",
-                        vars:    [],
-                        service: "list" },
-                      { method:  "POST",
-                        pattern: "^/contacts$",
-                        vars:    [],
-                        service: "save" },
-                      { method:  "PATCH",
-                        pattern: "^/contacts/(.*)$",
-                        vars:    ["LocalContactId"],
-                        service: "update" }
-                    ]
-
-                    var method = message.getMetadataValue("httpmethod")
-                    var uri    = message.getMetadataValue("jettyURI")
-                    message.setNextServiceId("NotHandled")
-                    // Match each route against the actual Jetty metadata from the HTTP request
-                    for(var i=0; i<routes.length; i++) {
-                      log.trace("Trying to match route: " + JSON.stringify(routes[i]));
-
-                      if(method != routes[i].method) {
-                        log.trace("HTTP method " + routes[i].method + " did not match " + method);
-                        continue;
-                      }
-
-                      var result = new RegExp(routes[i].pattern).exec(uri)
-                      if(result == null) {
-                        log.trace("Pattern " + routes[i].pattern + " did not match " + uri);
-                        continue;
-                      }
-
-                      // Both method and pattern match, now parse out the vars
-                      for(var j=0; j<routes[i].vars.length; j++) {
-                        var name  = routes[i].vars[j]
-                        var value = result[j+1]
-                        log.trace("Adding metadata " + name + "=" + value)
-                        message.addMetadata(name, value)
-                      }
-
-                      message.setNextServiceId(routes[i].service)
-
-                      break
-                    }
-                  ]]></script>
-                  </embedded-scripting-service>
+                    <default-service-id>NotHandled</default-service-id>
+                    <route>
+                      <url-pattern>^/contacts/swagger$</url-pattern>
+                      <method>GET</method>
+                      <service-id>swagger</service-id>
+                    </route>
+                    <route>
+                      <url-pattern>^/contacts/(.*)$</url-pattern>
+                      <method>GET</method>
+                      <service-id>retrieve</service-id>
+                      <metadata-key>LocalContactId</metadata-key>
+                    </route>
+                    <route>
+                      <url-pattern>^/contacts/(.*)$</url-pattern>
+                      <method>DELETE</method>
+                      <service-id>delete</service-id>
+                      <metadata-key>LocalContactId</metadata-key>
+                    </route>
+                    <route>
+                      <url-pattern>^/contacts$</url-pattern>
+                      <method>GET</method>
+                      <service-id>list</service-id>
+                    </route>
+                    <route>
+                      <url-pattern>^/contacts$</url-pattern>
+                      <method>POST</method>
+                      <service-id>save</service-id>
+                    </route>
+                    <route>
+                      <url-pattern>^/contacts/(.*)$</url-pattern>
+                      <method>PATCH</method>
+                      <service-id>update</service-id>
+                      <metadata-key>LocalContactId</metadata-key>
+                    </route>
+                  </jetty-routing-service>
                   <service-list>
                     <unique-id>save</unique-id>
                     <services>
@@ -167,57 +245,7 @@
                         "AccountId" : "0010Y00000H1Fg6QAF"
                       }
                       -->
-                      <json-path-service>
-                        <source class="string-payload-data-input-parameter"/>
-                        <json-path-execution>
-                          <source class="constant-data-input-parameter">
-                            <value>$.FirstName</value>
-                          </source>
-                          <target class="metadata-data-output-parameter">
-                            <metadata-key>FirstName</metadata-key>
-                          </target>
-                        </json-path-execution>
-                        <json-path-execution>
-                          <source class="constant-data-input-parameter">
-                            <value>$.LastName</value>
-                          </source>
-                          <target class="metadata-data-output-parameter">
-                            <metadata-key>LastName</metadata-key>
-                          </target>
-                        </json-path-execution>
-                        <json-path-execution>
-                          <source class="constant-data-input-parameter">
-                            <value>$.Email</value>
-                          </source>
-                          <target class="metadata-data-output-parameter">
-                            <metadata-key>Email</metadata-key>
-                          </target>
-                        </json-path-execution>
-                        <json-path-execution>
-                          <source class="constant-data-input-parameter">
-                            <value>$.Phone</value>
-                          </source>
-                          <target class="metadata-data-output-parameter">
-                            <metadata-key>Phone</metadata-key>
-                          </target>
-                        </json-path-execution>
-                        <json-path-execution>
-                          <source class="constant-data-input-parameter">
-                            <value>$.Account</value>
-                          </source>
-                          <target class="metadata-data-output-parameter">
-                            <metadata-key>Account</metadata-key>
-                          </target>
-                        </json-path-execution>
-                        <json-path-execution>
-                          <source class="constant-data-input-parameter">
-                            <value>$.AccountId</value>
-                          </source>
-                          <target class="metadata-data-output-parameter">
-                            <metadata-key>AccountId</metadata-key>
-                          </target>
-                        </json-path-execution>
-                      </json-path-service>
+                      <json-to-metadata/>
                       <!-- Generate a UID -->
                       <generate-unique-metadata-value-service>
                         <unique-id>Generate ContactID</unique-id>
@@ -278,15 +306,16 @@
                             <value>__CONTACT_ID__</value>
                           </key-value-pair>
                         </metadata-tokens>
-                        <template><![CDATA[{"id" : "__CONTACT_ID__"}]]></template>
+                        <template>
+                          <![CDATA[{"id" : "__CONTACT_ID__"}]]>
+                        </template>
                       </payload-from-metadata-service>
                     </services>
                   </service-list>
-
                   <service-list>
                     <unique-id>update</unique-id>
                     <services>
-                    <!--
+                      <!--
                       {
                         "FirstName" : "Lewin",
                         "LastName" : "Chan",
@@ -296,58 +325,7 @@
                         "AccountId" : "0010Y00000H1Fg6QAF"
                       }
                     -->
-                      <json-path-service>
-                        <source class="string-payload-data-input-parameter"/>
-                        <json-path-execution>
-                          <source class="constant-data-input-parameter">
-                            <value>$.FirstName</value>
-                          </source>
-                          <target class="metadata-data-output-parameter">
-                            <metadata-key>FirstName</metadata-key>
-                          </target>
-                        </json-path-execution>
-                        <json-path-execution>
-                          <source class="constant-data-input-parameter">
-                            <value>$.LastName</value>
-                          </source>
-                          <target class="metadata-data-output-parameter">
-                            <metadata-key>LastName</metadata-key>
-                          </target>
-                        </json-path-execution>
-                        <json-path-execution>
-                          <source class="constant-data-input-parameter">
-                            <value>$.Email</value>
-                          </source>
-                          <target class="metadata-data-output-parameter">
-                            <metadata-key>Email</metadata-key>
-                          </target>
-                        </json-path-execution>
-                        <json-path-execution>
-                          <source class="constant-data-input-parameter">
-                            <value>$.Phone</value>
-                          </source>
-                          <target class="metadata-data-output-parameter">
-                            <metadata-key>Phone</metadata-key>
-                          </target>
-                        </json-path-execution>
-                        <json-path-execution>
-                          <source class="constant-data-input-parameter">
-                            <value>$.Account</value>
-                          </source>
-                          <target class="metadata-data-output-parameter">
-                            <metadata-key>Account</metadata-key>
-                          </target>
-                        </json-path-execution>
-                        <json-path-execution>
-                          <source class="constant-data-input-parameter">
-                            <value>$.AccountId</value>
-                          </source>
-                          <target class="metadata-data-output-parameter">
-                            <metadata-key>AccountId</metadata-key>
-                          </target>
-                        </json-path-execution>
-                      </json-path-service>
-
+                      <json-to-metadata/>
                       <jdbc-raw-data-capture-service>
                         <unique-id>Update Contact</unique-id>
                         <connection class="shared-connection">
@@ -408,12 +386,10 @@
                           <query-class>java.lang.String</query-class>
                           <query-type>metadata</query-type>
                         </jdbc-statement-parameter>
-                        <result-set-translator class="jdbc-json-payload-translator"/>
+                        <result-set-translator class="jdbc-json-first-resultset-output"/>
                       </jdbc-data-query-service>
                     </services>
                   </service-list>
-
-
                   <service-list>
                     <unique-id>delete</unique-id>
                     <services>
@@ -441,11 +417,12 @@
                             <value>__CONTACT_ID__</value>
                           </key-value-pair>
                         </metadata-tokens>
-                        <template><![CDATA[{"id" : "__CONTACT_ID__", "status": "deleted"}]]></template>
+                        <template>
+                          <![CDATA[{"id" : "__CONTACT_ID__", "status": "deleted"}]]>
+                        </template>
                       </payload-from-metadata-service>
                     </services>
                   </service-list>
-
                   <service-list>
                     <unique-id>list</unique-id>
                     <services>
@@ -457,11 +434,10 @@
                         <statement-creator class="jdbc-configured-sql-statement">
                           <statement>select * from contacts</statement>
                         </statement-creator>
-                        <result-set-translator class="jdbc-json-payload-translator"/>
+                        <result-set-translator class="jdbc-json-first-resultset-output"/>
                       </jdbc-data-query-service>
                     </services>
                   </service-list>
-
                   <service-list>
                     <unique-id>retrieve</unique-id>
                     <services>
@@ -478,11 +454,10 @@
                           <query-class>java.lang.String</query-class>
                           <query-type>metadata</query-type>
                         </jdbc-statement-parameter>
-                        <result-set-translator class="jdbc-json-payload-translator"/>
+                        <result-set-translator class="jdbc-json-first-resultset-output"/>
                       </jdbc-data-query-service>
                     </services>
                   </service-list>
-
                   <service-list>
                     <unique-id>swagger</unique-id>
                     <services>
@@ -510,7 +485,6 @@
                       </json-transform-service>
                     </services>
                   </service-list>
-
                   <service-list>
                     <unique-id>NotHandled</unique-id>
                     <services>
@@ -522,11 +496,12 @@
                       </add-metadata-service>
                       <payload-from-metadata-service>
                         <metadata-tokens/>
-                        <template><![CDATA[{"Status" : "Not Handled; please check"}]]></template>
+                        <template>
+                          <![CDATA[{"Status" : "Not Handled; please check"}]]>
+                        </template>
                       </payload-from-metadata-service>
                     </services>
                   </service-list>
-
                 </services>
               </branching-service-collection>
               <standalone-producer>
@@ -586,9 +561,7 @@
                   <destination class="configured-produce-destination">
                     <destination>sfdc.create.contact</destination>
                   </destination>
-                  <acknowledge-mode>CLIENT_ACKNOWLEDGE</acknowledge-mode>
                   <message-translator class="text-message-translator"/>
-                  <session-factory class="jms-default-producer-session"/>
                 </producer>
                 <splitter class="xpath-message-splitter">
                   <xpath>//Row</xpath>
@@ -609,34 +582,26 @@
           </consumer>
           <service-collection class="service-list">
             <services>
-              <retrieve-from-cache>
-                <unique-id>GetLastExecutionFromCache</unique-id>
-                <cache class="default-ehcache">
-                  <cache-name>ADAPTER_DEFAULT_CACHE</cache-name>
-                  <max-elements-in-memory>0</max-elements-in-memory>
-                </cache>
-                <cache-entry-evaluator>
-                  <error-on-empty-key>false</error-on-empty-key>
-                  <error-on-empty-value>false</error-on-empty-value>
-                  <key-translator class="static-cache-value-translator">
-                    <value>LastExecution</value>
-                  </key-translator>
-                  <value-translator class="metadata-cache-value-translator">
-                    <metadata-key>LastExecution</metadata-key>
-                  </value-translator>
-                </cache-entry-evaluator>
-                <exception-if-not-found>false</exception-if-not-found>
-              </retrieve-from-cache>
               <branching-service-collection>
                 <unique-id>CheckLastUpdated</unique-id>
                 <first-service-id>CheckCache</first-service-id>
                 <services>
-                  <metadata-exists-branching-service>
+                  <check-cache-and-retrieve>
                     <unique-id>CheckCache</unique-id>
-                    <metadata-key>LastExecution</metadata-key>
-                    <default-service-id>GenerateInitial</default-service-id>
-                    <metadata-exists-service-id>Execute</metadata-exists-service-id>
-                  </metadata-exists-branching-service>
+                    <connection class="shared-connection">
+                      <lookup-name>ADAPTER_DEFAULT_CACHE</lookup-name>
+                    </connection>
+                    <cache-entry-evaluator>
+                      <key-translator class="static-cache-value-translator">
+                        <value>LastExecution</value>
+                      </key-translator>
+                      <value-translator class="metadata-cache-value-translator">
+                        <metadata-key>LastExecution</metadata-key>
+                      </value-translator>
+                    </cache-entry-evaluator>
+                    <keys-not-found-service-id>GenerateInitial</keys-not-found-service-id>
+                    <keys-found-service-id>Execute</keys-found-service-id>
+                  </check-cache-and-retrieve>
                   <service-list>
                     <unique-id>Execute</unique-id>
                     <services/>
@@ -654,7 +619,7 @@
               </branching-service-collection>
               <add-formatted-metadata-service>
                 <unique-id>Generate SELECT Statement</unique-id>
-                <format-string>SELECT * FROM contacts WHERE LastUpdated &gt; '%s' AND ContactId is not null AND LastUpdated > Created</format-string>
+                <format-string>SELECT * FROM contacts WHERE LastUpdated &gt; '%s' AND ContactId is not null AND LastUpdated &gt; Created</format-string>
                 <argument-metadata-key>LastExecution</argument-metadata-key>
                 <metadata-key>JDBC_UPDATED_CONTACTS</metadata-key>
               </add-formatted-metadata-service>
@@ -684,13 +649,9 @@
                   <destination class="configured-produce-destination">
                     <destination>sfdc.update.contact</destination>
                   </destination>
-                  <acknowledge-mode>CLIENT_ACKNOWLEDGE</acknowledge-mode>
                   <message-translator class="text-message-translator"/>
-                  <session-factory class="jms-default-producer-session"/>
                 </producer>
                 <splitter class="xpath-message-splitter">
-                  <copy-metadata>true</copy-metadata>
-                  <copy-object-metadata>false</copy-object-metadata>
                   <xpath>//Row</xpath>
                   <encoding>UTF-8</encoding>
                 </splitter>
@@ -702,10 +663,9 @@
               </add-timestamp-metadata-service>
               <add-to-cache>
                 <unique-id>AddLastExecution</unique-id>
-                <cache class="default-ehcache">
-                  <cache-name>ADAPTER_DEFAULT_CACHE</cache-name>
-                  <max-elements-in-memory>0</max-elements-in-memory>
-                </cache>
+                <connection class="shared-connection">
+                  <lookup-name>ADAPTER_DEFAULT_CACHE</lookup-name>
+                </connection>
                 <cache-entry-evaluator>
                   <key-translator class="static-cache-value-translator">
                     <value>LastExecution</value>
@@ -737,19 +697,15 @@
               <configured-thread-name>sfdc.authenticate.delete</configured-thread-name>
               <destination>sfdc.authenticate.delete</destination>
             </destination>
-            <acknowledge-mode>CLIENT_ACKNOWLEDGE</acknowledge-mode>
-            <message-translator class="auto-convert-message-translator"/>
-            <durable>false</durable>
           </consumer>
           <service-collection class="service-list">
             <services>
               <remove-from-cache>
                 <unique-id>RemoveRevokedAuthorizationHeaderFromCache</unique-id>
                 <continue-on-fail>true</continue-on-fail>
-                <cache class="default-ehcache">
-                  <cache-name>ADAPTER_DEFAULT_CACHE</cache-name>
-                  <max-elements-in-memory>0</max-elements-in-memory>
-                </cache>
+                <connection class="shared-connection">
+                  <lookup-name>ADAPTER_DEFAULT_CACHE</lookup-name>
+                </connection>
                 <cache-entry-evaluator>
                   <error-on-empty-key>false</error-on-empty-key>
                   <error-on-empty-value>false</error-on-empty-value>
@@ -766,9 +722,7 @@
           </service-collection>
           <producer class="jms-topic-producer">
             <destination class="jms-reply-to-destination"/>
-            <acknowledge-mode>CLIENT_ACKNOWLEDGE</acknowledge-mode>
             <message-translator class="text-message-translator"/>
-            <session-factory class="jms-default-producer-session"/>
           </producer>
         </standard-workflow>
         <standard-workflow>
@@ -778,40 +732,29 @@
               <configured-thread-name>sfdc.authenticate</configured-thread-name>
               <destination>sfdc.authenticate</destination>
             </destination>
-            <acknowledge-mode>CLIENT_ACKNOWLEDGE</acknowledge-mode>
-            <message-translator class="auto-convert-message-translator"/>
-            <durable>false</durable>
           </consumer>
           <service-collection class="service-list">
             <services>
-              <retrieve-from-cache>
-                <unique-id>RetrieveAuthorizationHeaderFromCache</unique-id>
-                <cache class="default-ehcache">
-                  <cache-name>ADAPTER_DEFAULT_CACHE</cache-name>
-                  <max-elements-in-memory>0</max-elements-in-memory>
-                </cache>
-                <cache-entry-evaluator>
-                  <error-on-empty-key>false</error-on-empty-key>
-                  <error-on-empty-value>false</error-on-empty-value>
-                  <key-translator class="static-cache-value-translator">
-                    <value>CachedOAuthHeader</value>
-                  </key-translator>
-                  <value-translator class="metadata-cache-value-translator">
-                    <metadata-key>Authorization</metadata-key>
-                  </value-translator>
-                </cache-entry-evaluator>
-                <exception-if-not-found>false</exception-if-not-found>
-              </retrieve-from-cache>
               <branching-service-collection>
                 <unique-id>CheckCache</unique-id>
                 <first-service-id>CheckAuthorizationHeaderInCache</first-service-id>
                 <services>
-                  <metadata-exists-branching-service>
+                  <check-cache-and-retrieve>
                     <unique-id>CheckAuthorizationHeaderInCache</unique-id>
-                    <metadata-key>Authorization</metadata-key>
-                    <default-service-id>SignIn</default-service-id>
-                    <metadata-exists-service-id>AbortSignIn</metadata-exists-service-id>
-                  </metadata-exists-branching-service>
+                    <connection class="shared-connection">
+                      <lookup-name>ADAPTER_DEFAULT_CACHE</lookup-name>
+                    </connection>
+                    <cache-entry-evaluator>
+                      <key-translator class="static-cache-value-translator">
+                        <value>CachedOAuthHeader</value>
+                      </key-translator>
+                      <value-translator class="metadata-cache-value-translator">
+                        <metadata-key>Authorization</metadata-key>
+                      </value-translator>
+                    </cache-entry-evaluator>
+                    <keys-not-found-service-id>SignIn</keys-not-found-service-id>
+                    <keys-found-service-id>AbortSignIn</keys-found-service-id>
+                  </check-cache-and-retrieve>
                   <service-list>
                     <unique-id>AbortSignIn</unique-id>
                     <services/>
@@ -830,10 +773,9 @@
                       </get-oauth-token>
                       <add-to-cache>
                         <unique-id>AddAuthorizationHeaderToCache</unique-id>
-                        <cache class="default-ehcache">
-                          <cache-name>ADAPTER_DEFAULT_CACHE</cache-name>
-                          <max-elements-in-memory>0</max-elements-in-memory>
-                        </cache>
+                        <connection class="shared-connection">
+                          <lookup-name>ADAPTER_DEFAULT_CACHE</lookup-name>
+                        </connection>
                         <cache-entry-evaluator>
                           <error-on-empty-key>false</error-on-empty-key>
                           <error-on-empty-value>false</error-on-empty-value>
@@ -875,18 +817,12 @@
               <configured-thread-name>sfdc.create.contact</configured-thread-name>
               <destination>sfdc.create.contact</destination>
             </destination>
-            <message-translator class="auto-convert-message-translator"/>
-            <durable>false</durable>
           </consumer>
           <service-collection class="service-list">
             <services>
-              <regexp-metadata-service>
-                <unique-id>Capture Original Payload</unique-id>
-                <regexp-metadata-query>
-                  <metadata-key>tmp_original_xml</metadata-key>
-                  <query-expression>(?s)(.*)</query-expression>
-                </regexp-metadata-query>
-              </regexp-metadata-service>
+              <shared-service>
+                <lookup-name>CAPTURE_XML</lookup-name>
+              </shared-service>
               <xpath-metadata-service>
                 <xpath-query class="configured-xpath-query">
                   <metadata-key>LocalContactId</metadata-key>
@@ -904,93 +840,33 @@
                   <value>${sfdc_request_base_url}</value>
                 </metadata-element>
               </add-metadata-service>
-              <xml-transform-service>
-                <unique-id>Remove Extra Elements</unique-id>
-                <url>${mappings_url}</url>
-                <transform-parameter class="xml-transform-string-parameter">
-                  <metadata-filter>
-                    <include-pattern>.*</include-pattern>
-                  </metadata-filter>
-                </transform-parameter>
-                <output-message-encoding>UTF-8</output-message-encoding>
-                <xml-transformer-factory class="xslt-transformer-factory"/>
-              </xml-transform-service>
-              <json-xml-transform-service>
-                <unique-id>Transform To SFDC JSON</unique-id>
-                <direction>XML_TO_JSON</direction>
-                <driver class="default-transformation-driver"/>
-              </json-xml-transform-service>
-              <clone-message-service-list>
-                <unique-id>Get OAUTH Token</unique-id>
-                <override-metadata>true</override-metadata>
-                <override-metadata-filter class="regex-metadata-filter">
-                  <include-pattern>^Authorization.*</include-pattern>
-                </override-metadata-filter>
-                <services>
-                  <standalone-requestor>
-                    <connection class="shared-connection">
-                      <lookup-name>LocalActiveMQ</lookup-name>
-                    </connection>
-                    <producer class="jms-topic-producer">
-                      <destination class="configured-produce-destination">
-                        <destination>sfdc.authenticate</destination>
-                      </destination>
-                      <ignore-reply-metadata>false</ignore-reply-metadata>
-                      <acknowledge-mode>CLIENT_ACKNOWLEDGE</acknowledge-mode>
-                      <message-translator class="text-message-translator">
-                        <metadata-filter class="regex-metadata-filter">
-                          <include-pattern>^Authorization.*</include-pattern>
-                        </metadata-filter>
-                      </message-translator>
-                    </producer>
-                    <reply-timeout>
-                      <unit>SECONDS</unit>
-                      <interval>30</interval>
-                    </reply-timeout>
-                  </standalone-requestor>
-                </services>
-              </clone-message-service-list>
-              <standalone-requestor>
-                <unique-id>Create Contact In SFDC</unique-id>
-                <continue-on-fail>true</continue-on-fail>
-                <producer class="standard-http-producer">
-                  <destination class="metadata-destination">
-                    <key>baseUrl</key>
-                  </destination>
-                  <content-type-provider class="http-configured-content-type-provider">
-                    <mime-type>application/json</mime-type>
-                  </content-type-provider>
-                  <method-provider class="http-configured-request-method">
-                    <method>POST</method>
-                  </method-provider>
-                  <response-header-handler class="http-response-headers-as-metadata"/>
-                  <request-header-provider class="http-metadata-request-headers">
-                    <filter class="regex-metadata-filter">
-                      <include-pattern>^Authorization.*</include-pattern>
-                    </filter>
-                  </request-header-provider>
-                </producer>
-                <reply-timeout>
-                  <unit>SECONDS</unit>
-                  <interval>60</interval>
-                </reply-timeout>
-              </standalone-requestor>
+              <shared-service>
+                <lookup-name>XML_TO_SF_JSON</lookup-name>
+              </shared-service>
+              <shared-service>
+                <lookup-name>OAUTH</lookup-name>
+              </shared-service>
               <branching-service-collection>
-                <unique-id>CheckSuccessfulResponse</unique-id>
-                <first-service-id>CheckResponseCode</first-service-id>
+                <unique-id>InsertContact</unique-id>
+                <first-service-id>DoInsertContact</first-service-id>
                 <services>
-                  <metadata-value-branching-service>
-                    <unique-id>CheckResponseCode</unique-id>
-                    <metadata-key>adphttpresponse</metadata-key>
+                  <branching-http-request-service>
+                    <unique-id>DoInsertContact</unique-id>
+                    <url>%message{baseUrl}</url>
+                    <method>POST</method>
+                    <response-header-handler class="http-response-headers-as-metadata"/>
+                    <request-header-provider class="http-metadata-request-headers">
+                      <filter class="regex-metadata-filter">
+                        <include-pattern>^Authorization.*</include-pattern>
+                      </filter>
+                    </request-header-provider>
+                    <content-type>application/json</content-type>
+                    <http-status-exact-match>
+                      <status-code>201</status-code>
+                      <service-id>SuccessfulResponse</service-id>
+                    </http-status-exact-match>
                     <default-service-id>RetryUsingNewAccessToken</default-service-id>
-                    <value-matcher class="integer-value-matcher"/>
-                    <metadata-to-service-id-mappings>
-                      <key-value-pair>
-                        <key>=201</key>
-                        <value>SuccessfulResponse</value>
-                      </key-value-pair>
-                    </metadata-to-service-id-mappings>
-                  </metadata-value-branching-service>
+                  </branching-http-request-service>
                   <service-list>
                     <unique-id>SuccessfulResponse</unique-id>
                     <services>
@@ -1035,56 +911,30 @@
                     </services>
                   </service-list>
                   <service-list>
-                    <unique-id>RevokeAccessTokenAndRetry</unique-id>
+                    <unique-id>RetryUsingNewAccessToken</unique-id>
                     <services>
-                      <standalone-requestor>
-                        <unique-id>RemoveAuthorizationHeaderFromCache</unique-id>
-                        <connection class="shared-connection">
-                          <lookup-name>LocalActiveMQ</lookup-name>
-                        </connection>
-                        <producer class="jms-topic-producer">
-                          <destination class="configured-produce-destination">
-                            <destination>sfdc.authenticate.delete</destination>
-                          </destination>
-                          <message-translator class="text-message-translator"/>
-                        </producer>
-                        <reply-timeout>
-                          <unit>SECONDS</unit>
-                          <interval>30</interval>
-                        </reply-timeout>
-                      </standalone-requestor>
-                      <payload-from-metadata-service>
-                        <unique-id>Restore Original XML</unique-id>
-                        <metadata-tokens>
-                          <key-value-pair>
-                            <key>tmp_original_xml</key>
-                            <value>__PAYLOAD__</value>
-                          </key-value-pair>
-                        </metadata-tokens>
-                        <template>__PAYLOAD__</template>
-                      </payload-from-metadata-service>
-                      <standalone-producer>
-                        <unique-id>Recursion?</unique-id>
-                        <connection class="shared-connection">
-                          <lookup-name>LocalActiveMQ</lookup-name>
-                        </connection>
-                        <producer class="jms-topic-producer">
-                          <destination class="configured-produce-destination">
-                            <destination>sfdc.create.contact</destination>
-                          </destination>
-                          <acknowledge-mode>CLIENT_ACKNOWLEDGE</acknowledge-mode>
-                          <message-translator class="text-message-translator">
-                            <metadata-filter class="remove-all-metadata-filter"/>
-                          </message-translator>
-                        </producer>
-                      </standalone-producer>
+                      <shared-service>
+                        <lookup-name>EXPIRE_OAUTH</lookup-name>
+                      </shared-service>
+                      <shared-service>
+                        <lookup-name>RESTORE_XML</lookup-name>
+                      </shared-service>
+                      <add-metadata-service>
+                        <unique-id>SetRetryTopic</unique-id>
+                        <metadata-element>
+                          <key>retry_topic</key>
+                          <value>sfdc.create.contact</value>
+                        </metadata-element>
+                      </add-metadata-service>
+                      <shared-service>
+                        <lookup-name>RETRY_SF_MESSAGE</lookup-name>
+                      </shared-service>
                     </services>
                   </service-list>
                 </services>
               </branching-service-collection>
             </services>
           </service-collection>
-          <produce-exception-handler class="null-produce-exception-handler"/>
         </standard-workflow>
         <standard-workflow>
           <unique-id>Update Contacts</unique-id>
@@ -1094,20 +944,12 @@
               <configured-thread-name>sfdc.update.contact</configured-thread-name>
               <destination>sfdc.update.contact</destination>
             </destination>
-            <acknowledge-mode>CLIENT_ACKNOWLEDGE</acknowledge-mode>
-            <message-translator class="auto-convert-message-translator"/>
-            <correlation-id-source class="null-correlation-id-source"/>
-            <durable>false</durable>
           </consumer>
           <service-collection class="service-list">
             <services>
-              <regexp-metadata-service>
-                <unique-id>Capture Original Payload</unique-id>
-                <regexp-metadata-query>
-                  <metadata-key>tmp_original_xml</metadata-key>
-                  <query-expression>(?s)(.*)</query-expression>
-                </regexp-metadata-query>
-              </regexp-metadata-service>
+              <shared-service>
+                <lookup-name>CAPTURE_XML</lookup-name>
+              </shared-service>
               <xpath-metadata-service>
                 <xpath-query class="configured-xpath-query">
                   <metadata-key>SfdcContactId</metadata-key>
@@ -1120,141 +962,56 @@
                 <argument-metadata-key>SfdcContactId</argument-metadata-key>
                 <metadata-key>SalesforcePatchUrl</metadata-key>
               </add-formatted-metadata-service>
-              <xml-transform-service>
-                <unique-id>Remove Extra Elements</unique-id>
-                <url>${mappings_url}</url>
-                <transform-parameter class="xml-transform-string-parameter">
-                  <metadata-filter>
-                    <include-pattern>.*</include-pattern>
-                  </metadata-filter>
-                </transform-parameter>
-                <output-message-encoding>UTF-8</output-message-encoding>
-                <xml-transformer-factory class="xslt-transformer-factory"/>
-              </xml-transform-service>
-              <json-xml-transform-service>
-                <unique-id>Transform To SFDC JSON</unique-id>
-                <direction>XML_TO_JSON</direction>
-                <driver class="default-transformation-driver"/>
-              </json-xml-transform-service>
-              <clone-message-service-list>
-                <unique-id>Get OAUTH Token</unique-id>
-                <override-metadata>true</override-metadata>
-                <override-metadata-filter class="regex-metadata-filter">
-                  <include-pattern>^Authorization.*</include-pattern>
-                </override-metadata-filter>
-                <services>
-                  <standalone-requestor>
-                    <connection class="shared-connection">
-                      <lookup-name>LocalActiveMQ</lookup-name>
-                    </connection>
-                    <producer class="jms-topic-producer">
-                      <destination class="configured-produce-destination">
-                        <destination>sfdc.authenticate</destination>
-                      </destination>
-                      <ignore-reply-metadata>false</ignore-reply-metadata>
-                      <acknowledge-mode>CLIENT_ACKNOWLEDGE</acknowledge-mode>
-                      <message-translator class="text-message-translator">
-                        <metadata-filter class="regex-metadata-filter">
-                          <include-pattern>^Authorization.*</include-pattern>
-                        </metadata-filter>
-                      </message-translator>
-                    </producer>
-                    <reply-timeout>
-                      <unit>SECONDS</unit>
-                      <interval>30</interval>
-                    </reply-timeout>
-                  </standalone-requestor>
-                </services>
-              </clone-message-service-list>
-              <standalone-requestor>
-                <unique-id>Patch Contact In SFDC</unique-id>
-                <continue-on-fail>true</continue-on-fail>
-                <producer class="standard-http-producer">
-                  <destination class="metadata-destination">
-                    <key>SalesforcePatchUrl</key>
-                  </destination>
-                  <content-type-provider class="http-configured-content-type-provider">
-                    <mime-type>application/json</mime-type>
-                  </content-type-provider>
-                  <method-provider class="http-configured-request-method">
-                    <method>POST</method>
-                  </method-provider>
-                  <response-header-handler class="http-response-headers-as-metadata"/>
-                  <request-header-provider class="http-metadata-request-headers">
-                    <filter class="regex-metadata-filter">
-                      <include-pattern>^Authorization.*</include-pattern>
-                    </filter>
-                  </request-header-provider>
-                </producer>
-                <reply-timeout>
-                  <unit>SECONDS</unit>
-                  <interval>60</interval>
-                </reply-timeout>
-              </standalone-requestor>
+              <shared-service>
+                <lookup-name>XML_TO_SF_JSON</lookup-name>
+              </shared-service>
+              <shared-service>
+                <lookup-name>OAUTH</lookup-name>
+              </shared-service>
               <branching-service-collection>
-                <unique-id>CheckSuccessfulResponse</unique-id>
-                <first-service-id>CheckResponseCode</first-service-id>
+                <unique-id>PatchContact</unique-id>
+                <first-service-id>DoPatchContact</first-service-id>
                 <services>
-                  <metadata-value-branching-service>
-                    <unique-id>CheckResponseCode</unique-id>
-                    <metadata-key>adphttpresponse</metadata-key>
+                  <branching-http-request-service>
+                    <unique-id>DoPatchContact</unique-id>
+                    <url>%message{SalesforcePatchUrl}</url>
+                    <method>POST</method>
+                    <response-header-handler class="http-response-headers-as-metadata"/>
+                    <request-header-provider class="http-metadata-request-headers">
+                      <filter class="regex-metadata-filter">
+                        <include-pattern>^Authorization.*</include-pattern>
+                      </filter>
+                    </request-header-provider>
+                    <content-type>application/json</content-type>
+                    <http-status-exact-match>
+                      <status-code>204</status-code>
+                      <service-id>SuccessfulResponse</service-id>
+                    </http-status-exact-match>
                     <default-service-id>RetryUsingNewAccessToken</default-service-id>
-                    <value-matcher class="integer-value-matcher"/>
-                    <metadata-to-service-id-mappings>
-                      <key-value-pair>
-                        <key>=204</key>
-                        <value>SuccessfulResponse</value>
-                      </key-value-pair>
-                    </metadata-to-service-id-mappings>
-                  </metadata-value-branching-service>
+                  </branching-http-request-service>
                   <service-list>
                     <unique-id>SuccessfulResponse</unique-id>
                     <services/>
                   </service-list>
                   <service-list>
-                    <unique-id>RevokeAccessTokenAndRetry</unique-id>
+                    <unique-id>RetryUsingNewAccessToken</unique-id>
                     <services>
-                      <standalone-requestor>
-                        <unique-id>RemoveAuthorizationHeaderFromCache</unique-id>
-                        <connection class="shared-connection">
-                          <lookup-name>LocalActiveMQ</lookup-name>
-                        </connection>
-                        <producer class="jms-topic-producer">
-                          <destination class="configured-produce-destination">
-                            <destination>sfdc.authenticate.delete</destination>
-                          </destination>
-                          <message-translator class="text-message-translator"/>
-                        </producer>
-                        <reply-timeout>
-                          <unit>SECONDS</unit>
-                          <interval>30</interval>
-                        </reply-timeout>
-                      </standalone-requestor>
-                      <payload-from-metadata-service>
-                        <unique-id>Restore Original XML</unique-id>
-                        <metadata-tokens>
-                          <key-value-pair>
-                            <key>tmp_original_xml</key>
-                            <value>__PAYLOAD__</value>
-                          </key-value-pair>
-                        </metadata-tokens>
-                        <template>__PAYLOAD__</template>
-                      </payload-from-metadata-service>
-                      <standalone-producer>
-                        <unique-id>Recursion?</unique-id>
-                        <connection class="shared-connection">
-                          <lookup-name>LocalActiveMQ</lookup-name>
-                        </connection>
-                        <producer class="jms-topic-producer">
-                          <destination class="configured-produce-destination">
-                            <destination>sfdc.update.contact</destination>
-                          </destination>
-                          <acknowledge-mode>CLIENT_ACKNOWLEDGE</acknowledge-mode>
-                          <message-translator class="text-message-translator">
-                            <metadata-filter class="remove-all-metadata-filter"/>
-                          </message-translator>
-                        </producer>
-                      </standalone-producer>
+                      <shared-service>
+                        <lookup-name>EXPIRE_OAUTH</lookup-name>
+                      </shared-service>
+                      <shared-service>
+                        <lookup-name>RESTORE_XML</lookup-name>
+                      </shared-service>
+                      <add-metadata-service>
+                        <unique-id>SetRetryTopic</unique-id>
+                        <metadata-element>
+                          <key>retry_topic</key>
+                          <value>sfdc.update.contact</value>
+                        </metadata-element>
+                      </add-metadata-service>
+                      <shared-service>
+                        <lookup-name>RETRY_SF_MESSAGE</lookup-name>
+                      </shared-service>
                     </services>
                   </service-list>
                 </services>
