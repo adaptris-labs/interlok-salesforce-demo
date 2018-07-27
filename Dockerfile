@@ -7,11 +7,12 @@ ADD ant /opt/interlok/ant
 ADD config /opt/interlok/config
 ADD docker-entrypoint-memorydb.sh /
 
-RUN cd ant && \
+RUN rm -f /opt/interlok/adp-*.jar && \
+    cd ant && \
     ant -emacs deploy && \
     rm -rf /root/.ivy2/cache/com.adaptris.ui && \
-    chmod +x /docker-entrypoint-memorydb.sh && \    
-    rm -rf /opt/interlok/ant 
+    chmod +x /docker-entrypoint-memorydb.sh && \
+    rm -rf /opt/interlok/ant
 
 
 ENTRYPOINT ["/docker-entrypoint-memorydb.sh"]
