@@ -5,7 +5,8 @@
     <format property="today" pattern="yyyy-MM-dd" locale="en"/>
   </tstamp>
   <target name="init">
-    <property name="nexus.host" value="https://development.adaptris.net"/>
+    <property name="nexus.host" value="https://nexus.adaptris.net"/>
+    <property name="nightly.host" value="https://development.adaptris.net"/>
     <property name="build.dir" value="${basedir}/build"/>
     <property name="build.tmp.dir" value="${build.dir}/tmp"/>
     <property name="resources.dir" value="${basedir}/resources"/>
